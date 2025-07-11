@@ -4,16 +4,20 @@ import (
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
+	"time"
 )
+
+var unlock = "unlock"
 
 type Clerk struct {
 	clnt       *tester.Clnt
 	server     string
 	versionErr int
+	id         string
 }
 
 func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, server: server, versionErr: 0}
+	ck := &Clerk{clnt: clnt, server: server, versionErr: 0, id: kvtest.RandValue(8)}
 	return ck
 }
 
@@ -32,10 +36,10 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	reply := &rpc.GetReply{}
 	// 重复直到成功
 	for !ck.clnt.Call(ck.server, "KVServer.Get", args, reply) {
-		if reply.Err != rpc.ErrNoKey {
-			break
-		}
+		reply = &rpc.GetReply{}
+		time.Sleep(100 * time.Millisecond)
 	}
+	//fmt.Printf("[get] |key: %s|value: %s|gversion: %d|err: %s\n", args.Key, reply.Value, reply.Version, reply.Err)
 	return reply.Value, reply.Version, reply.Err
 }
 
@@ -59,16 +63,15 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	args := &rpc.PutArgs{Key: key, Value: value, Version: version}
 	reply := &rpc.PutReply{}
-
-	for !ck.clnt.Call(ck.server, "KVServer.Put", args, reply) {
-		if reply.Err == rpc.ErrVersion {
-			ck.versionErr++
+	retries := 0
+	for {
+		for !ck.clnt.Call(ck.server, "KVServer.Put", args, reply) {
+			retries++
+			time.Sleep(100 * time.Millisecond)
 		}
-		// 第二次版本错误
-		if ck.versionErr >= 2 {
-			ck.versionErr = 0
+		if retries > 0 && reply.Err == rpc.ErrVersion {
 			return rpc.ErrMaybe
 		}
+		return reply.Err
 	}
-	return reply.Err
 }

@@ -67,7 +67,7 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	}
 
 	if args.Version == 0 { // 不存在且版本为0, 新增kv
-		kv.kvs[args.Key] = &tuple{args.Key, args.Value, args.Version + 1}
+		kv.kvs[args.Key] = &tuple{args.Key, args.Value, 1}
 	} else { // 不存在且版本不为0
 		reply.Err = rpc.ErrNoKey
 	}
