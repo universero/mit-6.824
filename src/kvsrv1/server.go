@@ -18,39 +18,67 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+// tuple 表示 key, value, version 三元组
+type tuple struct {
+	key     string
+	value   string
+	version rpc.Tversion
+}
 
 type KVServer struct {
-	mu sync.Mutex
-
-	// Your definitions here.
+	mu  sync.Mutex
+	kvs map[string]*tuple
 }
 
 func MakeKVServer() *KVServer {
-	kv := &KVServer{}
-	// Your code here.
+	kv := &KVServer{kvs: make(map[string]*tuple)}
 	return kv
 }
 
 // Get returns the value and version for args.Key, if args.Key
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	// Your code here.
+	reply.Err = rpc.ErrNoKey
+	if kvv, ok := kv.kvs[args.Key]; ok {
+		reply.Err = rpc.OK
+		reply.Value = kvv.value
+		reply.Version = kvv.version
+	}
+	return
 }
 
-// Update the value for a key if args.Version matches the version of
+// Put Update the value for a key if args.Version matches the version of
 // the key on the server. If versions don't match, return ErrVersion.
 // If the key doesn't exist, Put installs the value if the
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	reply.Err = rpc.OK
+	if kvv, ok := kv.kvs[args.Key]; ok { // key存在
+		if kvv.version == args.Version { // 版本匹配
+			kvv.value = args.Value
+			kvv.version++
+		} else { // 版本不匹配
+			reply.Err = rpc.ErrVersion
+		}
+		return
+	}
+
+	if args.Version == 0 { // 不存在且版本为0, 新增kv
+		kv.kvs[args.Key] = &tuple{args.Key, args.Value, args.Version + 1}
+	} else { // 不存在且版本不为0
+		reply.Err = rpc.ErrNoKey
+	}
+	return
 }
 
-// You can ignore Kill() for this lab
+// Kill You can ignore Kill() for this lab
 func (kv *KVServer) Kill() {
 }
 
-
-// You can ignore all arguments; they are for replicated KVservers
+// StartKVServer You can ignore all arguments; they are for replicated KVservers
 func StartKVServer(ends []*labrpc.ClientEnd, gid tester.Tgid, srv int, persister *tester.Persister) []tester.IService {
 	kv := MakeKVServer()
 	return []tester.IService{kv}
