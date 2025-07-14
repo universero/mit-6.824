@@ -87,6 +87,9 @@ get的要求比较简单
 - 存在就返回内容, 不存在就返回ErrNoKey
 ```go
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
+    kv.mu.Lock()
+    defer kv.mu.Unlock()
+	
 	reply.Err = rpc.ErrNoKey
 	if kvv, ok := kv.kvs[args.Key]; ok {
 		reply.Err = rpc.OK
