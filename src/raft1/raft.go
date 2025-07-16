@@ -19,29 +19,48 @@ import (
 	"6.5840/tester1"
 )
 
+const (
+	follower  = "follower"
+	candidate = "candidate"
+	leader    = "leader"
+)
 
-// A Go object implementing a single Raft peer.
+// Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *tester.Persister   // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
-
-	// Your data here (3A, 3B, 3C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
-
+	mu          sync.Mutex          // Lock to protect shared access to this peer's state
+	peers       []*labrpc.ClientEnd // RPC end points of all peers
+	persister   *tester.Persister   // Object to hold this peer's persisted state
+	me          int                 // this peer's index into peers[]
+	dead        int32               // set by Kill()
+	currentTerm int                 // 当前任期号(初始0), 持久化
+	votedFor    int                 // 已投票对象(初始-1), 持久化
+	log         []Entry             // 日志条目, 持久化
+	commitIndex int                 // 已提交的最大日志索引, 易失
+	lastApplied int                 // 已应用的最大日志索引, 易失
+	nextIndex   []int               // 每个server对应的下一个日志条目索引, leader
+	matchIndex  []int               // 每个server对应的已复制的最大索引, leader
+	role        string              // follower, candidate, leader
+	leaderId    int                 // 此时leaderId
+	electing    bool                // 是否选举中
+	times       time.Timer          // 计时次数
 }
 
-// return currentTerm and whether this server
+type Entry struct {
+	Index   int
+	Term    int
+	Command interface{}
+}
+
+// GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
-	var isleader bool
-	// Your code here (3A).
-	return term, isleader
+	var isLeader bool
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	isLeader = rf.role == leader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -61,7 +80,6 @@ func (rf *Raft) persist() {
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
 }
-
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
@@ -83,15 +101,14 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-// how many bytes in Raft's persisted log?
+// PersistBytes how many bytes in Raft's persisted log?
 func (rf *Raft) PersistBytes() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.persister.RaftStateSize()
 }
 
-
-// the service says it has created a snapshot that has
+// Snapshot the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
@@ -100,56 +117,60 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (3A, 3B).
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (3A).
+	Term        int
+	VoteGranted bool
 }
 
-// example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm { // 旧term, 不予投票
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm { // 更新的任期, 转换为follower
+		rf.convertToFollower(args.Term, -1) // 不确定目前leader
+	}
+	reply.Term = rf.currentTerm
+
+	if rf.votedFor != -1 && rf.votedFor != args.CandidateId { // 已投给别人
+		reply.VoteGranted = false
+		return
+	}
+	last := rf.log[len(rf.log)-1] // 最后一个条目
+	// 候选者日志不够新
+	if (last.Term > args.LastLogTerm) || (last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
+		reply.VoteGranted = false
+		return
+	}
+	reply.VoteGranted = true
+	rf.votedFor = args.CandidateId
+	return
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
+// 需要在外部获取锁
+func (rf *Raft) convertToFollower(term, leaderId int) {
+	rf.votedFor = -1
+	rf.currentTerm = term
+	rf.role = follower
+	rf.leaderId = leaderId
+}
+
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
-
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -169,7 +190,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
 
 	return index, term, isLeader
 }
@@ -195,27 +215,40 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
+		select {
+		case <-rf.times.C:
+			if rf.killed() {
+				return
+			}
 
-		// Your code here (3A)
-		// Check if a leader election should be started.
-
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+			rf.mu.Lock()
+			switch rf.role {
+			case follower:
+				rf.reTicker()
+				go rf.Elect() // 参与选举
+			case candidate:
+				rf.reTicker()
+				if rf.electing { // 选举中, 失败等待
+					rf.electing = false
+				} else {
+					go rf.Elect() // 参与选举
+				}
+			case leader:
+				return
+			}
+		}
 	}
 }
 
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
+// 需要外部获取锁, 启用新的计时器, 并废弃旧的
+func (rf *Raft) reTicker() {
+	if rf.role == leader {
+		go rf.ticker()
+	}
+	rf.times.Stop()
+	rf.times.Reset(time.Duration(50+(rand.Int63()%300)) * time.Millisecond)
+}
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 	rf := &Raft{}
@@ -230,7 +263,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
