@@ -133,6 +133,7 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 	rf.cond.L.Lock()
 	DPrintf("[term %d] [server %d] receive a AppendEntries RPC response with term %d from peer %d\n%+v\n", rf.currentTerm, rf.me, reply.Term, peer, reply)
 	defer rf.cond.L.Unlock()
+	defer rf.persist()
 
 	if args.Term > rf.currentTerm { // 新任期
 		rf.role, rf.currentTerm, rf.votedFor = follower, reply.Term, -1
@@ -194,6 +195,7 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
+	defer rf.persist()
 	DPrintf("[term %d] [server %d] receive a AppendEntries RPC Request with term %d \n%+v\n", rf.currentTerm, rf.me, args.Term, args)
 	reply.Success, reply.XIndex, reply.XTerm, reply.XLen = false, -1, -1, -1
 

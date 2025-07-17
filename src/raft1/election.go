@@ -25,6 +25,7 @@ func (rf *Raft) ResetElectionTimeout() {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
+	defer rf.persist()
 
 	reply.VoteGranted = false
 	if rf.currentTerm > args.Term { // 旧term, 不予投票
@@ -58,6 +59,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, vote *int32) 
 	}
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
+	defer rf.persist()
 
 	if reply.Term > rf.currentTerm { // 收到更新term
 		rf.currentTerm, rf.role, rf.votedFor = reply.Term, follower, -1
@@ -93,6 +95,7 @@ func (rf *Raft) StartElect() {
 			rf.currentTerm++
 			rf.heartbeatTime = time.Now().UnixMilli()
 			rf.ResetElectionTimeout()
+			rf.persist()
 
 			args := &RequestVoteArgs{
 				Term:         rf.currentTerm,
