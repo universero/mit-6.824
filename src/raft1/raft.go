@@ -52,6 +52,7 @@ type Raft struct {
 	heartbeatInterval int64  // 心跳间隔
 	heartbeatTime     int64  // 上一次收到心跳消息时间
 	applyCh           chan raftapi.ApplyMsg
+	snapshot          *raftapi.ApplyMsg
 	cond              *sync.Cond
 	peerCond          []*sync.Cond
 }
@@ -72,13 +73,21 @@ func (rf *Raft) GetState() (int, bool) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
+	state, snapshot := rf.encodeState(), rf.persister.ReadSnapshot()
+	if snapshot != nil {
+		rf.persister.Save(state, snapshot)
+		return
+	}
+	rf.persister.Save(state, nil)
+}
+
+func (rf *Raft) encodeState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	_ = e.Encode(rf.currentTerm)
 	_ = e.Encode(rf.votedFor)
 	_ = e.Encode(rf.log)
-	state := w.Bytes()
-	rf.persister.Save(state, nil)
+	return w.Bytes()
 }
 
 // restore previously persisted state.
@@ -93,11 +102,8 @@ func (rf *Raft) readPersist(data []byte) {
 	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&log) != nil {
 		panic("read persistence error")
 	} else {
-		rf.currentTerm = currentTerm
-		rf.votedFor = votedFor
-		rf.log = log
-		rf.lastApplied = rf.log[0].Index
-		rf.commitIndex = rf.log[0].Index
+		rf.currentTerm, rf.votedFor, rf.log, rf.role = currentTerm, votedFor, log, follower
+		rf.lastApplied, rf.commitIndex = rf.log[0].Index, rf.log[0].Index
 	}
 }
 
@@ -113,8 +119,13 @@ func (rf *Raft) PersistBytes() int {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
-
+	rf.cond.L.Lock()
+	defer rf.cond.L.Unlock()
+	// index-0是占位用的, 所以有了快照后还需要更新index-0
+	rf.log = append([]Entry{}, rf.log[index-rf.log[0].Index:]...)
+	rf.log[0].Command = nil
+	DPrintf("[term %d] [server %d] create a snapshot at index %d", rf.currentTerm, rf.me, index)
+	rf.persister.Save(rf.encodeState(), snapshot)
 }
 
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
@@ -142,6 +153,38 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	return index, term, true
+}
+
+func (rf *Raft) UpdateStateMachine() {
+	for !rf.killed() {
+		rf.cond.L.Lock()
+		for rf.lastApplied >= rf.commitIndex {
+			rf.cond.Wait()
+		}
+		if rf.snapshot != nil { // 应用快照
+			snapshot := rf.snapshot
+			rf.snapshot = nil
+			rf.cond.L.Unlock()
+			rf.applyCh <- *snapshot
+		} else {
+			rf.cond.L.Unlock()
+		}
+
+		rf.cond.L.Lock()
+		for rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+			startIndexMem := rf.lastApplied - rf.log[0].Index
+			applyMsg := raftapi.ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[startIndexMem].Command,
+				CommandIndex: rf.log[startIndexMem].Index,
+			}
+			rf.cond.L.Unlock()
+			rf.applyCh <- applyMsg
+			rf.cond.L.Lock()
+		}
+		rf.cond.L.Unlock()
+	}
 }
 
 func (rf *Raft) Kill() {

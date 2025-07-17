@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"6.5840/raftapi"
 	"time"
 )
 
@@ -27,31 +26,6 @@ type AppendEntriesReply struct {
 	XIndex  int
 	XTerm   int
 	XLen    int
-}
-
-func (rf *Raft) UpdateStateMachine() {
-	for !rf.killed() {
-		rf.cond.L.Lock()
-		for rf.lastApplied >= rf.commitIndex {
-			rf.cond.Wait()
-		}
-		rf.cond.L.Unlock()
-
-		rf.cond.L.Lock()
-		for rf.commitIndex > rf.lastApplied {
-			rf.lastApplied++
-			startIndexMem := rf.lastApplied - rf.log[0].Index
-			applyMsg := raftapi.ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[startIndexMem].Command,
-				CommandIndex: rf.log[startIndexMem].Index,
-			}
-			rf.cond.L.Unlock()
-			rf.applyCh <- applyMsg
-			rf.cond.L.Lock()
-		}
-		rf.cond.L.Unlock()
-	}
 }
 
 func (rf *Raft) SendHeartbeat() {
@@ -93,10 +67,13 @@ func (rf *Raft) SendLog(peer int) {
 	if rf.nextIndex[peer] > rf.log[0].Index {
 		args, reply := rf.SetAppendEntriesParams(peer)
 		rf.cond.L.Unlock()
-		rf.sendAppendEntries(peer, args, reply)
+		rf.SendAppendEntries(peer, args, reply)
 		return
 	}
+	// follower 日志太短, 发送snapshot
+	args, reply := rf.SetInstallSnapshotParams(peer)
 	rf.cond.L.Unlock()
+	rf.SendInstallSnapshot(peer, args, reply)
 }
 
 func (rf *Raft) SetAppendEntriesParams(peer int) (*AppendEntriesArgs, *AppendEntriesReply) {
@@ -118,7 +95,7 @@ func (rf *Raft) SetAppendEntriesParams(peer int) (*AppendEntriesArgs, *AppendEnt
 	}, &AppendEntriesReply{}
 }
 
-func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) SendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.cond.L.Lock()
 	if rf.role != leader {
 		rf.cond.L.Unlock()
