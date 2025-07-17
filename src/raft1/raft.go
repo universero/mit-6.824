@@ -7,8 +7,9 @@ package raft
 // Make() creates a new raft peer that implements the raft interface.
 
 import (
-	//	"bytes"
-	"math/rand"
+	"fmt"
+
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,42 +26,41 @@ const (
 	leader    = "leader"
 )
 
+var gap int64 = 110
+
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	mu          sync.Mutex          // Lock to protect shared access to this peer's state
-	peers       []*labrpc.ClientEnd // RPC end points of all peers
-	persister   *tester.Persister   // Object to hold this peer's persisted state
-	me          int                 // this peer's index into peers[]
-	dead        int32               // set by Kill()
-	currentTerm int                 // 当前任期号(初始0), 持久化
-	votedFor    int                 // 已投票对象(初始-1), 持久化
-	log         []Entry             // 日志条目, 持久化
-	commitIndex int                 // 已提交的最大日志索引, 易失
-	lastApplied int                 // 已应用的最大日志索引, 易失
-	nextIndex   []int               // 每个server对应的下一个日志条目索引, leader
-	matchIndex  []int               // 每个server对应的已复制的最大索引, leader
-	role        string              // follower, candidate, leader
-	leaderId    int                 // 此时leaderId
-	electing    bool                // 是否选举中
-	times       time.Timer          // 计时次数
-}
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	peers     []*labrpc.ClientEnd // RPC end points of all peers
+	persister *tester.Persister   // Object to hold this peer's persisted state
+	me        int                 // this peer's index into peers[]
+	dead      int32               // set by Kill()
 
-type Entry struct {
-	Index   int
-	Term    int
-	Command interface{}
+	currentTerm int     // 当前任期号(初始0), 持久化
+	votedFor    int     // 已投票对象(初始-1), 持久化
+	log         []Entry // 日志条目, 持久化
+
+	commitIndex int // 已提交的最大日志索引, 易失
+	lastApplied int // 已应用的最大日志索引, 易失
+
+	nextIndex         []int  // 每个server对应的下一个日志条目索引, leader
+	matchIndex        []int  // 每个server对应的已复制的最大索引, leader
+	leaderId          int    // 当前leader
+	role              string // follower, candidate, leader
+	electionInterval  int64  // 选举时间间隔
+	heartbeatInterval int64  // 心跳间隔
+	heartbeatTime     int64  // 上一次收到心跳消息时间
+	applyCh           chan raftapi.ApplyMsg
+	cond              *sync.Cond
+	peerCond          []*sync.Cond
 }
 
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
-	var isLeader bool
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	term = rf.currentTerm
-	isLeader = rf.role == leader
-	return term, isLeader
+	rf.cond.L.Lock()
+	defer rf.cond.L.Unlock()
+	return rf.currentTerm, rf.role == leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -117,136 +117,41 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
-}
-
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if args.Term < rf.currentTerm { // 旧term, 不予投票
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
-	if args.Term > rf.currentTerm { // 更新的任期, 转换为follower
-		rf.convertToFollower(args.Term, -1) // 不确定目前leader
-	}
-	reply.Term = rf.currentTerm
-
-	if rf.votedFor != -1 && rf.votedFor != args.CandidateId { // 已投给别人
-		reply.VoteGranted = false
-		return
-	}
-	last := rf.log[len(rf.log)-1] // 最后一个条目
-	// 候选者日志不够新
-	if (last.Term > args.LastLogTerm) || (last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
-		reply.VoteGranted = false
-		return
-	}
-	reply.VoteGranted = true
-	rf.votedFor = args.CandidateId
-	return
-}
-
-// 需要在外部获取锁
-func (rf *Raft) convertToFollower(term, leaderId int) {
-	rf.votedFor = -1
-	rf.currentTerm = term
-	rf.role = follower
-	rf.leaderId = leaderId
-}
-
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.cond.L.Lock()
+	defer rf.cond.L.Unlock()
+	term, index := rf.currentTerm, rf.log[len(rf.log)-1].Index+1
+	if rf.role != leader { // 不是leader
+		return index, term, false
+	}
 
-	// Your code here (3B).
+	entry := Entry{
+		Term:    term,
+		Index:   index,
+		Command: command,
+	}
+	rf.log = append(rf.log, entry)
+	rf.matchIndex[rf.me] = rf.log[len(rf.log)-1].Index
+	rf.nextIndex[rf.me] = rf.matchIndex[rf.me] + 1
 
-	return index, term, isLeader
+	for peer := range rf.peers {
+		if peer == rf.me {
+			continue
+		}
+		rf.peerCond[peer].Signal()
+	}
+
+	return index, term, true
 }
 
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+	DPrintf("[term %d] [server %d] was killed with status\n%s\n", rf.currentTerm, rf.me, rf.String())
 }
 
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-		select {
-		case <-rf.times.C:
-			if rf.killed() {
-				return
-			}
-
-			rf.mu.Lock()
-			switch rf.role {
-			case follower:
-				rf.reTicker()
-				go rf.Elect() // 参与选举
-			case candidate:
-				rf.reTicker()
-				if rf.electing { // 选举中, 失败等待
-					rf.electing = false
-				} else {
-					go rf.Elect() // 参与选举
-				}
-			case leader:
-				return
-			}
-		}
-	}
-}
-
-// 需要外部获取锁, 启用新的计时器, 并废弃旧的
-func (rf *Raft) reTicker() {
-	if rf.role == leader {
-		go rf.ticker()
-	}
-	rf.times.Stop()
-	rf.times.Reset(time.Duration(50+(rand.Int63()%300)) * time.Millisecond)
 }
 
 func Make(peers []*labrpc.ClientEnd, me int,
@@ -256,13 +161,63 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (3A, 3B, 3C).
+	rf.votedFor, rf.currentTerm, rf.role, rf.leaderId = -1, 0, follower, -1
+	rf.log = []Entry{{Index: 0, Term: 0, Command: nil}}
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.applyCh, rf.heartbeatTime, rf.heartbeatInterval = applyCh, time.Now().UnixMilli(), gap
+	rf.ResetElectionTimeout()
+	rf.cond = sync.NewCond(&rf.mu)
+	rf.peerCond = make([]*sync.Cond, len(peers))
+	for i := 0; i < len(peers); i++ {
+		rf.peerCond[i] = sync.NewCond(&sync.Mutex{})
+	}
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// start ticker goroutine to start elections
-	go rf.ticker()
-
+	go rf.StartElect()         // 开始选举
+	go rf.SendHeartbeat()      // 发送心跳
+	go rf.UpdateStateMachine() // 更新日志
+	for peer := range rf.peers {
+		if peer == rf.me {
+			continue
+		}
+		go rf.ReplicateLog(peer) // 每个peer复制日志
+	}
 	return rf
+}
+
+func (rf *Raft) String() string {
+	var builder strings.Builder
+	// 基础信息（节点ID、角色、LeaderID）
+	builder.WriteString(fmt.Sprintf("[Raft %d | %s | LeaderId %d]\n",
+		rf.me,
+		strings.ToUpper(rf.role[:1])+rf.role[1:], rf.leaderId))
+	// 任期和投票信息
+	builder.WriteString(fmt.Sprintf("├─ CurrentTerm: %d | VotedFor: %d\n",
+		rf.currentTerm,
+		rf.votedFor))
+	// 完整日志输出
+	builder.WriteString("├─ Log Entries:\n")
+	if len(rf.log) == 0 {
+		builder.WriteString("│   <empty>\n")
+	} else {
+		for i, entry := range rf.log {
+			builder.WriteString(fmt.Sprintf("│   %4d: {Term: %d, Cmd: %v}\n",
+				i,
+				entry.Term,
+				entry.Command))
+		}
+	}
+	// 提交和应用进度
+	builder.WriteString(fmt.Sprintf("├─ CommitIndex: %d | LastApplied: %d\n",
+		rf.commitIndex,
+		rf.lastApplied))
+	// Leader专属信息
+	if rf.role == "leader" {
+		builder.WriteString(fmt.Sprintf("├─ NextIndex: %v\n", rf.nextIndex))
+		builder.WriteString(fmt.Sprintf("└─ MatchIndex: %v", rf.matchIndex))
+	}
+	return builder.String()
 }
