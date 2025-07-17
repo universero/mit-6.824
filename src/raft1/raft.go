@@ -8,7 +8,6 @@ package raft
 
 import (
 	"fmt"
-
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -154,12 +153,32 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		mu:          sync.Mutex{},
+		peers:       peers,
+		persister:   persister,
+		me:          me,
+		dead:        0,
+		currentTerm: 0,
+		votedFor:    -1,
+		log: []Log{{ // 所有的peer初始化时都会有一个0日志, 且一定一致
+			Term:    0,
+			Index:   0,
+			Command: nil,
+		}},
+		commitIndex: 0,
+		lastApplied: 0,
+		nextIndex:   make([]int, len(peers)),
+		matchIndex:  make([]int, len(peers)),
+		role:        follower,
+		idle:        true,
+		leaderId:    -1,
+		electing:    false,
+		applyCh:     applyCh,
+	}
 
 	rf.votedFor, rf.currentTerm, rf.role, rf.leaderId = -1, 0, follower, -1
 	rf.log = []Entry{{Index: 0, Term: 0, Command: nil}}
@@ -198,6 +217,7 @@ func (rf *Raft) String() string {
 	builder.WriteString(fmt.Sprintf("├─ CurrentTerm: %d | VotedFor: %d\n",
 		rf.currentTerm,
 		rf.votedFor))
+
 	// 完整日志输出
 	builder.WriteString("├─ Log Entries:\n")
 	if len(rf.log) == 0 {
@@ -210,10 +230,12 @@ func (rf *Raft) String() string {
 				entry.Command))
 		}
 	}
+
 	// 提交和应用进度
 	builder.WriteString(fmt.Sprintf("├─ CommitIndex: %d | LastApplied: %d\n",
 		rf.commitIndex,
 		rf.lastApplied))
+
 	// Leader专属信息
 	if rf.role == "leader" {
 		builder.WriteString(fmt.Sprintf("├─ NextIndex: %v\n", rf.nextIndex))
