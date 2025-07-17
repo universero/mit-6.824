@@ -22,11 +22,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term          int
-	Success       bool
-	ConflictIndex int
-	ConflictTerm  int
-	LogLen        int
+	Term    int
+	Success bool
+	XIndex  int
+	XTerm   int
+	XLen    int
 }
 
 func (rf *Raft) UpdateStateMachine() {
@@ -145,18 +145,18 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 	}
 
 	if !reply.Success {
-		if reply.LogLen != -1 {
-			rf.nextIndex[peer] = reply.LogLen
+		if reply.XLen != -1 {
+			rf.nextIndex[peer] = reply.XLen
 		} else {
 			prevIndexMem := args.PrevLogIndex - rf.log[0].Index
 			for i := prevIndexMem; i >= 0; i-- {
-				if rf.log[i].Term == reply.ConflictTerm {
+				if rf.log[i].Term == reply.XTerm {
 					rf.nextIndex[peer] = i + 1 + rf.log[0].Index
 					rf.peerCond[peer].Signal()
 					return
 				}
 			}
-			rf.nextIndex[peer] = reply.ConflictIndex
+			rf.nextIndex[peer] = reply.XIndex
 		}
 		if rf.nextIndex[peer] < 1 {
 			rf.nextIndex[peer] = 1
@@ -195,7 +195,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
 	DPrintf("[term %d] [server %d] receive a AppendEntries RPC Request with term %d \n%+v\n", rf.currentTerm, rf.me, args.Term, args)
-	reply.Success, reply.ConflictIndex, reply.ConflictTerm, reply.LogLen = false, -1, -1, -1
+	reply.Success, reply.XIndex, reply.XTerm, reply.XLen = false, -1, -1, -1
 
 	if args.Term < rf.currentTerm { // 收到旧term的消息, 告知其新任期
 		reply.Term = rf.currentTerm
@@ -214,16 +214,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if prevIndexMem >= len(rf.log) {
-		reply.LogLen = rf.log[len(rf.log)-1].Index
+		reply.XLen = rf.log[len(rf.log)-1].Index
 		return
 	}
 
 	if rf.log[prevIndexMem].Term != args.PrevLogTerm {
-		reply.ConflictTerm = rf.log[prevIndexMem].Term
+		reply.XTerm = rf.log[prevIndexMem].Term
 		for i := 0; i <= prevIndexMem; i++ {
-			if rf.log[i].Term == reply.ConflictTerm {
-				reply.ConflictIndex = i + rf.log[0].Index
-				DPrintf("[term %d] [server %d] try to append entries but found conflict at index %d term %d", rf.currentTerm, rf.me, reply.ConflictIndex, reply.ConflictTerm)
+			if rf.log[i].Term == reply.XTerm {
+				reply.XIndex = i + rf.log[0].Index
+				DPrintf("[term %d] [server %d] try to append entries but found conflict at index %d term %d", rf.currentTerm, rf.me, reply.XIndex, reply.XTerm)
 				return
 			}
 		}
@@ -238,8 +238,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			count++
 			continue
 		}
-		// TODO 优化条件
-		if indexMem < len(rf.log) && (term != rf.log[indexMem].Term || indexMem >= len(rf.log)) {
+		if indexMem < len(rf.log) && term != rf.log[indexMem].Term {
 			rf.log = rf.log[:indexMem]
 			break
 		}

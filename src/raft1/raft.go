@@ -153,31 +153,14 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 	rf := &Raft{
-		mu:          sync.Mutex{},
-		peers:       peers,
-		persister:   persister,
-		me:          me,
-		dead:        0,
-		currentTerm: 0,
-		votedFor:    -1,
-		log: []Log{{ // 所有的peer初始化时都会有一个0日志, 且一定一致
-			Term:    0,
-			Index:   0,
-			Command: nil,
-		}},
-		commitIndex: 0,
-		lastApplied: 0,
-		nextIndex:   make([]int, len(peers)),
-		matchIndex:  make([]int, len(peers)),
-		role:        follower,
-		idle:        true,
-		leaderId:    -1,
-		electing:    false,
-		applyCh:     applyCh,
+		mu:        sync.Mutex{},
+		peers:     peers,
+		persister: persister,
+		me:        me,
+		dead:      0,
 	}
 
 	rf.votedFor, rf.currentTerm, rf.role, rf.leaderId = -1, 0, follower, -1
