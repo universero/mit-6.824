@@ -6,8 +6,8 @@ import (
 	"6.5840/raft1"
 	"6.5840/raftapi"
 	"6.5840/tester1"
-	"fmt"
 	"sync"
+	"time"
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
@@ -15,7 +15,7 @@ var useRaftStateMachine bool // to plug in another raft besided raft1
 type Op struct {
 	Id   int           // 唯一标识
 	Me   int           // rsm id
-	Term int           // 请求时term
+	Term int           // term
 	Req  any           // 请求
 	Resp any           // 响应
 	Err  rpc.Err       // 错误
@@ -92,55 +92,45 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		return rpc.ErrWrongLeader, nil
 	}
 	op := &Op{Id: index, Me: rsm.me, Term: term, Req: req, Done: make(chan struct{})}
-	fmt.Printf("[rsm %d] [term %d] submit op %+v\n", rsm.me, term, op)
+	//fmt.Printf("[rsm %d] [term %d] submit op %+v\n", rsm.me, term, op)
 	rsm.waits[op.Id] = op
 	rsm.mu.Unlock()
-
-	<-op.Done // when the op was finished
-	rsm.mu.Lock()
-	defer rsm.mu.Unlock()
-	fmt.Printf("[rsm %d] [submit] weak up %d %+v with err %s\n", rsm.me, index, op, op.Err)
-	if term, isLeader = rsm.rf.GetState(); term > op.Term || !isLeader || op.Err != rpc.OK {
-		if _, ok := rsm.waits[op.Id]; ok {
-			delete(rsm.waits, op.Id)
-			var toDelete []int
-			for id, pend := range rsm.waits {
-				if pend.Term < op.Term || (pend.Term == op.Term && pend.Id > op.Id) {
-					toDelete = append(toDelete, id)
-				}
+	for {
+		select {
+		case <-op.Done:
+			if term != op.Term {
+				return rpc.ErrWrongLeader, nil
 			}
-			// 再处理
-			for _, id := range toDelete {
-				fmt.Printf("close %d\n", id)
-				if id != op.Id {
-					close(rsm.waits[id].Done)
-				}
+			return op.Err, op.Resp
+		case <-time.After(100 * time.Millisecond):
+			if currentTerm, stillLeader := rsm.rf.GetState(); currentTerm == term && stillLeader {
+				continue
 			}
+			return rpc.ErrWrongLeader, nil
 		}
-		return rpc.ErrWrongLeader, nil
 	}
-	delete(rsm.waits, op.Id)
-	return rpc.OK, op.Resp
 }
 
 func (rsm *RSM) reader() {
 	var term int
-	//var isLeader bool
+	var resp any
 	for {
 		select {
-		case msg, _ := <-rsm.applyCh: // receive a finish op
+		case msg, ok := <-rsm.applyCh: // receive a finish op
+			if !ok {
+				return
+			}
 			rsm.mu.Lock()
-			if op, exist := rsm.waits[msg.CommandIndex]; exist {
-				op.Err, op.Resp = rpc.ErrWrongLeader, nil
-				if term, _ = rsm.rf.GetState(); term == op.Term && op.Req == msg.Command {
-					op.Err = rpc.OK
-					if msg.Command != nil {
-						op.Resp = rsm.sm.DoOp(msg.Command) // 执行操作
-					}
+			if msg.Command != nil {
+				resp = rsm.sm.DoOp(msg.Command) // 执行操作
+				if op, exist := rsm.waits[msg.CommandIndex]; exist {
+					term, _ = rsm.rf.GetState()
+					op.Err, op.Resp = rpc.OK, resp
+					//fmt.Printf("[rsm %d] [term %d] submit msg %+v with error %s \n", rsm.me, term, msg, op.Err)
+					op.Term = term
+					close(op.Done)
+					delete(rsm.waits, msg.CommandIndex)
 				}
-				close(op.Done)
-			} else if msg.Command != nil {
-				rsm.sm.DoOp(msg.Command)
 			}
 			rsm.mu.Unlock()
 		}
