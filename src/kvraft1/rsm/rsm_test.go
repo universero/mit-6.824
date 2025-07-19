@@ -144,7 +144,7 @@ func TestLeaderPartition4A(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(1 * time.Second):
 		text := "Submit after healing didn't return"
 		tester.AnnotateCheckerFailure(text, text)
 		ts.Fatalf(text)
