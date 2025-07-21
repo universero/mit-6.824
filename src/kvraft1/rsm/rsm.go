@@ -103,9 +103,18 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			}
 			return op.Err, op.Resp
 		case <-time.After(100 * time.Millisecond):
+			rsm.mu.Lock()
 			if currentTerm, stillLeader := rsm.rf.GetState(); currentTerm == term && stillLeader {
+				rsm.mu.Unlock()
 				continue
 			}
+			delete(rsm.waits, op.Id)
+			rsm.mu.Unlock()
+			return rpc.ErrWrongLeader, nil
+		case <-time.After(3 * time.Second):
+			rsm.mu.Lock()
+			delete(rsm.waits, op.Id)
+			rsm.mu.Unlock()
 			return rpc.ErrWrongLeader, nil
 		}
 	}
@@ -122,6 +131,7 @@ func (rsm *RSM) reader() {
 			}
 			rsm.mu.Lock()
 			if msg.Command != nil {
+				//fmt.Printf("[rsm %d] doing %+v \n", rsm.me, msg.Command)
 				resp = rsm.sm.DoOp(msg.Command) // 执行操作
 				if op, exist := rsm.waits[msg.CommandIndex]; exist {
 					term, _ = rsm.rf.GetState()

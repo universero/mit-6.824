@@ -104,11 +104,11 @@ func (rf *Raft) SendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 	rf.cond.L.Unlock()
 
 	if !rf.peers[peer].Call("Raft.AppendEntries", args, reply) {
-		DPrintf("[term %d] [server %d] meets a network failure when send AppendEntries RPC to peer %d\n", rf.currentTerm, rf.me, peer)
+		//DPrintf("[term %d] [server %d] meets a network failure when send AppendEntries RPC to peer %d\n", rf.currentTerm, rf.me, peer)
 		return
 	}
 	rf.cond.L.Lock()
-	DPrintf("[term %d] [server %d] receive a AppendEntries RPC response with term %d from peer %d\n%+v\n", rf.currentTerm, rf.me, reply.Term, peer, reply)
+	//DPrintf("[term %d] [server %d] send a AppendEntries RPC request with term %d from peer %d\n%+v\n", rf.currentTerm, rf.me, reply.Term, peer, reply)
 	defer rf.cond.L.Unlock()
 	defer rf.persist()
 
@@ -146,7 +146,7 @@ func (rf *Raft) SendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 	if len(args.Entries) > 0 {
 		rf.nextIndex[peer] = args.Entries[len(args.Entries)-1].Index + 1
 		rf.matchIndex[peer] = rf.nextIndex[peer] - 1
-		DPrintf("[term %d] [server %d] find peer %d with nextIndex %d; matchIndex %d", rf.currentTerm, rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
+		//DPrintf("[term %d] [server %d] find peer %d with nextIndex %d; matchIndex %d", rf.currentTerm, rf.me, peer, rf.nextIndex[peer], rf.matchIndex[peer])
 	}
 	N := rf.log[len(rf.log)-1].Index
 	for N > rf.commitIndex {
@@ -173,7 +173,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
 	defer rf.persist()
-	DPrintf("[term %d] [server %d] receive a AppendEntries RPC Request with term %d \n%+v\n", rf.currentTerm, rf.me, args.Term, args)
+	//DPrintf("[term %d] [server %d] receive a AppendEntries RPC Request with term %d \n%+v\n", rf.currentTerm, rf.me, args.Term, args)
 	reply.Success, reply.XIndex, reply.XTerm, reply.XLen = false, -1, -1, -1
 
 	if args.Term < rf.currentTerm { // 收到旧term的消息, 告知其新任期
@@ -202,7 +202,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for i := 0; i <= prevIndexMem; i++ {
 			if rf.log[i].Term == reply.XTerm {
 				reply.XIndex = i + rf.log[0].Index
-				DPrintf("[term %d] [server %d] try to append entries but found conflict at index %d term %d", rf.currentTerm, rf.me, reply.XIndex, reply.XTerm)
+				//DPrintf("[term %d] [server %d] try to append entries but found conflict at index %d term %d", rf.currentTerm, rf.me, reply.XIndex, reply.XTerm)
 				return
 			}
 		}
@@ -226,7 +226,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, rf.log[len(rf.log)-1].Index)
-		DPrintf("[term %d] [server %d] update commitIndex to %d", rf.currentTerm, rf.me, rf.commitIndex)
+		//DPrintf("[term %d] [server %d] update commitIndex to %d", rf.currentTerm, rf.me, rf.commitIndex)
 	}
 	rf.cond.Broadcast()
 	reply.Success = true

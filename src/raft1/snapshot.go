@@ -66,7 +66,7 @@ func (rf *Raft) SendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.cond.L.Lock()
 	defer rf.cond.L.Unlock()
-	DPrintf("[term %d] [server %d] receive a InstallSanpshot Request \n%+v\n", rf.currentTerm, rf.me, args)
+	//DPrintf("[term %d] [server %d] receive a InstallSanpshot Request \n%+v\n", rf.currentTerm, rf.me, args)
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.Success = false

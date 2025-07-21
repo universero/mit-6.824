@@ -124,7 +124,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// index-0是占位用的, 所以有了快照后还需要更新index-0
 	rf.log = append([]Entry{}, rf.log[index-rf.log[0].Index:]...)
 	rf.log[0].Command = nil
-	DPrintf("[term %d] [server %d] create a snapshot at index %d", rf.currentTerm, rf.me, index)
+	//DPrintf("[term %d] [server %d] create a snapshot at index %d", rf.currentTerm, rf.me, index)
 	rf.persister.Save(rf.encodeState(), snapshot)
 }
 
@@ -180,6 +180,9 @@ func (rf *Raft) UpdateStateMachine() {
 				CommandIndex: rf.log[startIndexMem].Index,
 			}
 			rf.cond.L.Unlock()
+			if rf.killed() {
+				return
+			}
 			rf.applyCh <- applyMsg
 			rf.cond.L.Lock()
 		}
@@ -189,7 +192,8 @@ func (rf *Raft) UpdateStateMachine() {
 
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	DPrintf("[term %d] [server %d] was killed with status\n%s\n", rf.currentTerm, rf.me, rf.String())
+	close(rf.applyCh)
+	//DPrintf("[term %d] [server %d] was killed with status\n%s\n", rf.currentTerm, rf.me, rf.String())
 }
 
 func (rf *Raft) killed() bool {

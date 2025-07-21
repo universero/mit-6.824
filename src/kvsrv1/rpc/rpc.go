@@ -22,9 +22,12 @@ type PutArgs struct {
 	Key     string
 	Value   string
 	Version Tversion
+	CkId    string
+	Seq     int32
 }
 
 type PutReply struct {
+	Seq int32
 	Err Err
 }
 
@@ -37,4 +40,3 @@ type GetReply struct {
 	Version Tversion
 	Err     Err
 }
-

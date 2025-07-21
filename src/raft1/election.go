@@ -45,10 +45,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			args.LastLogIndex >= rf.log[len(rf.log)-1].Index)) { // 已投给别人
 		reply.VoteGranted = true
 		rf.votedFor, rf.role, rf.heartbeatTime = args.CandidateId, follower, time.Now().UnixMilli()
-		DPrintf("[term %d] [server %d] vote for peer %d", rf.currentTerm, rf.me, args.CandidateId)
+		//DPrintf("[term %d] [server %d] vote for peer %d", rf.currentTerm, rf.me, args.CandidateId)
 		return
 	}
-	DPrintf("[term %d] [server %d] denied to vote to %d because of outdate log: lastest: %+v ; args: %+v", rf.currentTerm, rf.me, args.CandidateId, rf.log[len(rf.log)-1], args)
+	//DPrintf("[term %d] [server %d] denied to vote to %d because of outdate log: lastest: %+v ; args: %+v", rf.currentTerm, rf.me, args.CandidateId, rf.log[len(rf.log)-1], args)
 	return
 }
 
@@ -71,7 +71,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, vote *int32) 
 		return
 	}
 	if rf.role == candidate && rf.currentTerm == args.Term && atomic.AddInt32(vote, 1) > int32(len(rf.peers)/2) {
-		DPrintf("[term %d] [server %d] become leader", rf.currentTerm, rf.me)
+		//DPrintf("[term %d] [server %d] become leader", rf.currentTerm, rf.me)
 		rf.role, rf.votedFor = leader, -1
 		for peer := range rf.peers {
 			rf.nextIndex[peer] = rf.log[len(rf.log)-1].Index + 1
@@ -90,7 +90,7 @@ func (rf *Raft) StartElect() {
 	for !rf.killed() {
 		rf.cond.L.Lock()
 		if time.Now().UnixMilli()-rf.heartbeatTime >= rf.electionInterval && rf.role != leader {
-			DPrintf("[term %d] [server %d] become candidate", rf.currentTerm, rf.me)
+			//DPrintf("[term %d] [server %d] become candidate", rf.currentTerm, rf.me)
 			rf.role, rf.votedFor = candidate, rf.me
 			rf.currentTerm++
 			rf.heartbeatTime = time.Now().UnixMilli()

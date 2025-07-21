@@ -4,18 +4,25 @@ import (
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
+	"sync"
+	"sync/atomic"
+	"time"
 )
-
 
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
-	// You will have to modify this struct.
+	mu      sync.Mutex
+	recent  atomic.Int32 // 最近一次的leader
+	n       int32
+	seq     atomic.Int32
+	me      string
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
-	ck := &Clerk{clnt: clnt, servers: servers}
-	// You'll have to add code here.
+	ck := &Clerk{clnt: clnt, servers: servers, n: int32(len(servers)), me: kvtest.RandValue(len(servers))}
+	ck.recent.Store(0)
+	ck.seq.Store(0)
 	return ck
 }
 
@@ -30,9 +37,16 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-
-	// You will have to modify this function.
-	return "", 0, ""
+	args, reply := &rpc.GetArgs{Key: key}, rpc.GetReply{}
+	// 重复直到成功
+	for !ck.clnt.Call(ck.servers[ck.recent.Load()%ck.n], "KVServer.Get", args, &reply) || reply.Err == rpc.ErrWrongLeader {
+		reply = rpc.GetReply{}
+		ck.recent.Add(1)
+		time.Sleep(100 * time.Millisecond)
+	}
+	//fmt.Printf("[get] |key: %s|value: %s|gversion: %d|err: %s\n", args.Key, reply.Value, reply.Version, reply.Err)
+	//fmt.Printf("[Clerk] Get Reply: %+v\n", reply)
+	return reply.Value, reply.Version, reply.Err
 }
 
 // Put updates key with value only if the version in the
@@ -53,6 +67,23 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
-	return ""
+	retries, seq := 0, ck.seq.Add(1)
+	args, reply := &rpc.PutArgs{Key: key, Value: value, Version: version, Seq: seq, CkId: ck.me}, rpc.PutReply{}
+	//fmt.Printf("[Clerk %s] Put Args: key %s value %s version %v seq %d\n", ck.me, key, value, version, seq)
+	for {
+		for !ck.clnt.Call(ck.servers[ck.recent.Load()%ck.n], "KVServer.Put", args, &reply) || reply.Err == rpc.ErrWrongLeader {
+			if reply.Err != rpc.ErrWrongLeader {
+				retries++
+			}
+			reply = rpc.PutReply{}
+			ck.recent.Add(1)
+			time.Sleep(100 * time.Millisecond)
+		}
+		if retries > 0 && reply.Err == rpc.ErrVersion {
+			//fmt.Printf("[Clerk] maybe: %+v\n", reply)
+			return rpc.ErrMaybe
+		}
+		//fmt.Printf("[Clerk] Put Reply: %+v\n", reply)
+		return reply.Err
+	}
 }
