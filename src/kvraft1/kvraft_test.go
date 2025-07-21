@@ -236,11 +236,11 @@ func TestOnePartition4B(t *testing.T) {
 
 	select {
 	case ver := <-done0:
-		err := fmt.Sprintf("Put in minority completed with version = %v", ver)
+		err := fmt.Sprintf("Put in minority completed with Version = %v", ver)
 		tester.AnnotateCheckerFailure(err, err)
 		t.Fatalf(err)
 	case ver := <-done1:
-		err := fmt.Sprintf("Get in minority completed with version = %v", ver)
+		err := fmt.Sprintf("Get in minority completed with Version = %v", ver)
 		tester.AnnotateCheckerFailure(err, err)
 		t.Fatalf(err)
 	case <-time.After(time.Second):

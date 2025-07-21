@@ -26,8 +26,8 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	return ck
 }
 
-// Get fetches the current value and version for a key.  It returns
-// ErrNoKey if the key does not exist. It keeps trying forever in the
+// Get fetches the current Value and Version for a Key.  It returns
+// ErrNoKey if the Key does not exist. It keeps trying forever in the
 // face of all other errors.
 //
 // You can send an RPC to server i with code like this:
@@ -44,13 +44,13 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		ck.recent.Add(1)
 		time.Sleep(100 * time.Millisecond)
 	}
-	//fmt.Printf("[get] |key: %s|value: %s|gversion: %d|err: %s\n", args.Key, reply.Value, reply.Version, reply.Err)
+	//fmt.Printf("[get] |Key: %s|Value: %s|gversion: %d|err: %s\n", args.Key, reply.Value, reply.Version, reply.Err)
 	//fmt.Printf("[Clerk] Get Reply: %+v\n", reply)
 	return reply.Value, reply.Version, reply.Err
 }
 
-// Put updates key with value only if the version in the
-// request matches the version of the key at the server.  If the
+// Put updates Key with Value only if the Version in the
+// request matches the Version of the Key at the server.  If the
 // versions numbers don't match, the server should return
 // ErrVersion.  If Put receives an ErrVersion on its first RPC, Put
 // should return ErrVersion, since the Put was definitely not
@@ -69,7 +69,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	retries, seq := 0, ck.seq.Add(1)
 	args, reply := &rpc.PutArgs{Key: key, Value: value, Version: version, Seq: seq, CkId: ck.me}, rpc.PutReply{}
-	//fmt.Printf("[Clerk %s] Put Args: key %s value %s version %v seq %d\n", ck.me, key, value, version, seq)
+	//fmt.Printf("[Clerk %s] Put Args: Key %s Value %s Version %v seq %d\n", ck.me, Key, Value, Version, seq)
 	for {
 		for !ck.clnt.Call(ck.servers[ck.recent.Load()%ck.n], "KVServer.Put", args, &reply) || reply.Err == rpc.ErrWrongLeader {
 			if reply.Err != rpc.ErrWrongLeader {
@@ -80,10 +80,12 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if retries > 0 && reply.Err == rpc.ErrVersion {
-			//fmt.Printf("[Clerk] maybe: %+v\n", reply)
+			//fmt.Printf("[Clerk %s] maybe: %+v\n", ck.me, reply)
 			return rpc.ErrMaybe
+		} else if retries > 0 {
+			//fmt.Printf("[Clerk %s] retry but nomaybe: %+v\n", ck.me, reply)
 		}
-		//fmt.Printf("[Clerk] Put Reply: %+v\n", reply)
+		//fmt.Printf("[Clerk %s] Put Reply: %+v wit retry %d\n", ck.me, reply, retries)
 		return reply.Err
 	}
 }

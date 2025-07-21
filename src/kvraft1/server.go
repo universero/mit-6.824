@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 
@@ -23,9 +24,9 @@ type KVServer struct {
 }
 
 type tuple struct {
-	key     string
-	value   string
-	version rpc.Tversion
+	Key     string
+	Value   string
+	Version rpc.Tversion
 }
 
 func (kv *KVServer) DoOp(req any) any {
@@ -51,12 +52,28 @@ func (kv *KVServer) DoOp(req any) any {
 }
 
 func (kv *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	_ = e.Encode(kv.kvs)
+	_ = e.Encode(kv.ckSeq)
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
-	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	d := labgob.NewDecoder(bytes.NewBuffer(data))
+	var kvs map[string]*tuple
+	var ckSeq map[string]*rpc.PutReply
+	if err := d.Decode(&kvs); err != nil {
+		panic(err)
+	}
+	if err := d.Decode(&ckSeq); err != nil {
+		panic(err)
+	}
+	kv.kvs, kv.ckSeq = kvs, ckSeq
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -78,23 +95,18 @@ func (kv *KVServer) doGet(args *rpc.GetArgs) (reply *rpc.GetReply) {
 	reply = &rpc.GetReply{Err: rpc.ErrNoKey}
 	if kvv, ok := kv.kvs[args.Key]; ok {
 		reply.Err = rpc.OK
-		reply.Value = kvv.value
-		reply.Version = kvv.version
+		reply.Value = kvv.Value
+		reply.Version = kvv.Version
 	}
 	return
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	kv.mu.Lock()
-	if last, ok := kv.ckSeq[args.CkId]; ok {
-		if last.Seq > args.Seq { // 做过的请求
-			*reply = *(last)
-			kv.mu.Unlock()
-			return
-		}
-	} else {
-		reply.Seq = args.Seq
-		kv.ckSeq[args.CkId] = reply
+	if last, ok := kv.ckSeq[args.CkId]; ok && last.Seq >= args.Seq { // 做过的请求
+		reply.Err, reply.Seq = last.Err, last.Seq
+		kv.mu.Unlock()
+		return
 	}
 	kv.mu.Unlock()
 
@@ -113,11 +125,16 @@ func (kv *KVServer) doPut(args *rpc.PutArgs) (reply *rpc.PutReply) {
 	defer kv.mu.Unlock()
 
 	//fmt.Printf("[kvserver %d] Put Args: %+v\n", kv.me, args)
+	if last, ok := kv.ckSeq[args.CkId]; ok && last.Seq >= args.Seq { // 做过的请求
+		reply = &rpc.PutReply{Err: last.Err, Seq: last.Seq}
+		return
+	}
+	defer func() { kv.ckSeq[args.CkId] = reply }()
 	reply = &rpc.PutReply{Err: rpc.OK, Seq: args.Seq}
 	if kvv, ok := kv.kvs[args.Key]; ok { // key存在
-		if kvv.version == args.Version { // 版本匹配
-			kvv.value = args.Value
-			kvv.version++
+		if kvv.Version == args.Version { // 版本匹配
+			kvv.Value = args.Value
+			kvv.Version++
 		} else { // 版本不匹配
 			reply.Err = rpc.ErrVersion
 		}
@@ -153,8 +170,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rpc.GetArgs{})
 	kv := &KVServer{me: me}
 
-	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	kv.kvs = make(map[string]*tuple)
 	kv.ckSeq = make(map[string]*rpc.PutReply)
+	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	return []tester.IService{kv, kv.rsm.Raft()}
 }

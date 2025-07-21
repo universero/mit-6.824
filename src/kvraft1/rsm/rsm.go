@@ -72,6 +72,9 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+	if snap := persister.ReadSnapshot(); len(snap) > 0 {
+		rsm.sm.Restore(snap)
+	}
 	go rsm.reader()
 	return rsm
 }
@@ -130,7 +133,7 @@ func (rsm *RSM) reader() {
 				return
 			}
 			rsm.mu.Lock()
-			if msg.Command != nil {
+			if msg.CommandValid && msg.Command != nil {
 				//fmt.Printf("[rsm %d] doing %+v \n", rsm.me, msg.Command)
 				resp = rsm.sm.DoOp(msg.Command) // 执行操作
 				if op, exist := rsm.waits[msg.CommandIndex]; exist {
@@ -141,6 +144,11 @@ func (rsm *RSM) reader() {
 					close(op.Done)
 					delete(rsm.waits, msg.CommandIndex)
 				}
+				if rsm.maxraftstate != -1 && rsm.maxraftstate-rsm.rf.PersistBytes() < 20 {
+					rsm.rf.Snapshot(msg.CommandIndex, rsm.sm.Snapshot())
+				}
+			} else if msg.SnapshotValid && len(msg.Snapshot) > 0 {
+				rsm.sm.Restore(msg.Snapshot)
 			}
 			rsm.mu.Unlock()
 		}
