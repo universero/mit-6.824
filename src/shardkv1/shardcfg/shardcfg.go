@@ -29,7 +29,7 @@ const (
 func Key2Shard(key string) Tshid {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	shard := Tshid(Tshid(h.Sum32()) % NShards)
+	shard := Tshid(h.Sum32()) % NShards
 	return shard
 }
 
