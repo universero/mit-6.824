@@ -9,7 +9,9 @@ import (
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
+	"sync"
 )
 
 var nowCfg = "now-config"
@@ -33,7 +35,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	return sck
 }
 
-// The tester calls InitController() before starting a new
+// InitController The tester calls InitController() before starting a new
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
@@ -51,12 +53,95 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	}
 }
 
-// Called by the tester to ask the controller to change the
+// ChangeConfigTo Called by the tester to ask the controller to change the
 // configuration from the current one to new.  While the controller
 // changes the configuration it may be superseded by another
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
-	// Your code here.
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var toFroze []shardcfg.Tshid
+	var old *shardcfg.ShardConfig
+	var version rpc.Tversion
+	oldCache := make(map[shardcfg.Tshid][]byte)
+
+	if strCfg, ver, err := sck.IKVClerk.Get(nowCfg); err == rpc.OK {
+		version = ver
+		old = shardcfg.FromString(strCfg)
+	} else {
+		panic("no old config")
+	}
+	DPrintf("[controller] find old config \n%+v\n and receive new config \n%+v\n", old, new)
+	for shid, gid := range new.Shards {
+		if old.Shards[shid] != gid { // different map from shard to shardgrp
+			toFroze = append(toFroze, shardcfg.Tshid(shid))
+		}
+	}
+	DPrintf("[controller] shard to freeze %+v\n", toFroze)
+
+	// froze
+	for _, shid := range toFroze {
+		wg.Add(1)
+		go func(shid shardcfg.Tshid) {
+			defer wg.Done()
+			if gid, server, ok := old.GidServers(shid); ok {
+				clerk := shardgrp.MakeClerk(sck.clnt, server)
+				// froze the shard and get the state
+				var cache []byte
+				var err rpc.Err
+				if cache, err = clerk.FreezeShard(shid, new.Num); err != rpc.OK {
+					panic("freeze error:")
+				}
+				DPrintf("[controller] shard %d frozed on group %d\n", shid, gid)
+				mu.Lock()
+				defer mu.Unlock()
+				oldCache[shid] = cache
+			}
+		}(shid)
+	}
+	wg.Wait()
+	//fmt.Printf("[controller] old cache \n%+v\n", oldCache)
+	// install
+	for _, shid := range toFroze {
+		wg.Add(1)
+		go func(shid shardcfg.Tshid) {
+			defer wg.Done()
+			if gid, server, ok := new.GidServers(shid); ok {
+				clerk := shardgrp.MakeClerk(sck.clnt, server)
+				mu.Lock()
+				cache := oldCache[shid]
+				mu.Unlock()
+				if err := clerk.InstallShard(shid, cache, new.Num); err != rpc.OK {
+					panic("install shard error:" + err)
+				}
+				DPrintf("[controller] shard %d installed on group %d\n", shid, gid)
+			} else {
+				panic("no such shard")
+			}
+		}(shid)
+	}
+	wg.Wait()
+
+	// delete
+	for _, shid := range toFroze {
+		wg.Add(1)
+		go func(sid shardcfg.Tshid) {
+			defer wg.Done()
+			if gid, server, ok := old.GidServers(sid); ok {
+				clerk := shardgrp.MakeClerk(sck.clnt, server)
+				if err := clerk.DeleteShard(shid, new.Num); err != rpc.OK {
+					panic("delete shard error")
+				}
+				DPrintf("[controller] shard %d deleted on group %d\n", shid, gid)
+			}
+		}(shid)
+	}
+	wg.Wait()
+
+	strCfg := new.String()
+	if err := sck.IKVClerk.Put(nowCfg, strCfg, version); err != rpc.OK {
+		panic("change config err" + err)
+	}
 }
 
 // Query Return the current configuration
